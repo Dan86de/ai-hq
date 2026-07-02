@@ -41,6 +41,12 @@ export {
   type DecisionRequest,
 } from './decision-queue.ts'
 export {
+  createNotifier,
+  type Notification,
+  type NotificationDeliverer,
+  type Notifier,
+} from './notifier.ts'
+export {
   createPermissionGate,
   defaultAllowlist,
   type PermissionGate,

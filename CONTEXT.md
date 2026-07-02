@@ -17,4 +17,5 @@ Use these names in code, tests, issues, and docs.
 - **Verdict**: the Operator's ruling on a Decision - approve, or deny with an optional note that is relayed to the agent.
 - **Decision Inbox**: the UI surface aggregating pending Decisions across all Sessions.
 - **AgentAdapter**: the only interface allowed to know which agent platform is underneath (launch, event stream, permission callback, interrupt, resume). Everything Claude-specific lives behind it.
+- **Notifier**: the Daemon component that watches the Event Log and fires native macOS notifications (via osascript) when a Decision parks, a Session completes, or a Session fails.
 - **Daemon**: the single long-running local process hosting the Event Log, Session Registry, Decision Queue, API, and Notifier.

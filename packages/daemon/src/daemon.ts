@@ -4,12 +4,15 @@ import { serve, type ServerType } from '@hono/node-server'
 import {
   createDecisionQueue,
   createEventLog,
+  createNotifier,
   createPermissionGate,
   createSessionRegistry,
   type AgentAdapter,
+  type NotificationDeliverer,
 } from '@ai-hq/core'
 import { createClaudeAgentAdapter } from '@ai-hq/adapter-claude'
 import { createApp } from './app.ts'
+import { deliverWithOsascript } from './osascript.ts'
 
 export interface Daemon {
   port: number
@@ -23,6 +26,8 @@ export interface StartDaemonOptions {
   port: number
   /** AgentAdapter Sessions run on; defaults to the real Claude adapter. Tests inject the fake. */
   adapter?: AgentAdapter
+  /** Delivers Notifications to the Operator; defaults to macOS notifications via osascript. */
+  notify?: NotificationDeliverer
 }
 
 export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> {
@@ -35,6 +40,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     eventLog,
     adapter: options.adapter ?? createClaudeAgentAdapter(),
     gate: createPermissionGate({ decisionQueue }),
+  })
+  const notifier = createNotifier({
+    eventLog,
+    sessions: registry,
+    deliver: options.notify ?? deliverWithOsascript,
   })
   const app = createApp({ registry, eventLog, decisionQueue })
 
@@ -54,6 +64,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
         // SSE connections stay open indefinitely; close() alone would wait on them forever.
         if ('closeAllConnections' in server) server.closeAllConnections()
       })
+      notifier.close()
       registry.close()
       decisionQueue.close()
       eventLog.close()

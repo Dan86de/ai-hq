@@ -15,16 +15,30 @@ import {
   type AgentAdapter,
   type FakeAgentStep,
   type HqEvent,
+  type Notification,
   type Verdict,
 } from '@ai-hq/core'
 import { startDaemon, type Daemon } from '../src/index.ts'
 
 let dataDir: string
 let daemon: Daemon
+let notifications: Notification[]
+
+// Every startDaemon in this file records Notifications instead of firing real
+// macOS ones; the osascript default would pop notifications on each test run.
+const recordNotification = (notification: Notification): void => {
+  notifications.push(notification)
+}
 
 beforeEach(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'hq-daemon-'))
-  daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter() })
+  notifications = []
+  daemon = await startDaemon({
+    dataDir,
+    port: 0,
+    adapter: createFakeAgentAdapter(),
+    notify: recordNotification,
+  })
 })
 
 afterEach(async () => {
@@ -205,7 +219,12 @@ describe('daemon HTTP API', () => {
       .toBe('completed')
     await daemon.close()
 
-    daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter() })
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: createFakeAgentAdapter(),
+      notify: recordNotification,
+    })
 
     const listed = (await listSessions()).find((s) => s.id === session.id)
     expect(listed?.status).toBe('completed')
@@ -234,7 +253,12 @@ describe('gating over HTTP', () => {
 
   async function restartWithScript(script: FakeAgentStep[]): Promise<void> {
     await daemon.close()
-    daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter({ script }) })
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: createFakeAgentAdapter({ script }),
+      notify: recordNotification,
+    })
   }
 
   async function getPendingDecisions(path: string) {
@@ -357,6 +381,45 @@ describe('gating over HTTP', () => {
   })
 })
 
+describe('Notifier', () => {
+  async function restartWithAdapter(adapter: AgentAdapter): Promise<void> {
+    await daemon.close()
+    daemon = await startDaemon({ dataDir, port: 0, adapter, notify: recordNotification })
+  }
+
+  test('a parked Decision notifies, naming the Session and the gated tool', async () => {
+    await restartWithAdapter(
+      createFakeAgentAdapter({
+        script: [{ type: 'gated_tool_call', toolName: 'Bash', input: { command: 'rm -rf build' } }],
+      }),
+    )
+
+    await launchSession('/repo/a', 'clean the build')
+
+    await expect
+      .poll(() => notifications)
+      .toContainEqual({ title: 'a - clean the build', body: 'Decision parked: Bash' })
+  })
+
+  test('a completed Session notifies', async () => {
+    await launchSession('/repo/a', 'build the feature')
+
+    await expect
+      .poll(() => notifications)
+      .toContainEqual({ title: 'a - build the feature', body: 'Session completed' })
+  })
+
+  test('a failed Session notifies', async () => {
+    await restartWithAdapter(createFakeAgentAdapter({ failWith: 'agent crashed' }))
+
+    await launchSession('/repo/a', 'doomed task')
+
+    await expect
+      .poll(() => notifications)
+      .toContainEqual({ title: 'a - doomed task', body: 'Session failed: agent crashed' })
+  })
+})
+
 describe('GET /sessions/:id/events (SSE)', () => {
   const completedTranscript = [
     'session_launched',
@@ -377,7 +440,12 @@ describe('GET /sessions/:id/events (SSE)', () => {
   test('replays history and then continues live, with no gaps or duplicates', async () => {
     await daemon.close()
     const manual = createManualAdapter()
-    daemon = await startDaemon({ dataDir, port: 0, adapter: manual.adapter })
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: manual.adapter,
+      notify: recordNotification,
+    })
 
     const session = await launchSession('/repo/a', 'stream me')
     manual.emit({ type: 'agent_message', text: 'one' })
