@@ -8,6 +8,7 @@ import {
   decideDecisionResponseSchema,
   getSessionResponseSchema,
   hqEventSchema,
+  interruptSessionResponseSchema,
   launchSessionResponseSchema,
   listDecisionsResponseSchema,
   listSessionsResponseSchema,
@@ -503,6 +504,48 @@ describe('GET /sessions/:id/events (SSE)', () => {
 
   test('returns 404 for an unknown session', async () => {
     expect((await fetch(url('/sessions/unknown/events'))).status).toBe(404)
+  })
+})
+
+describe('interrupting over HTTP', () => {
+  function interruptSession(sessionId: string): Promise<Response> {
+    return fetch(url(`/sessions/${sessionId}/interrupt`), { method: 'POST' })
+  }
+
+  test('POST /sessions/:id/interrupt stops the Session; the list and the stream show it', async () => {
+    await daemon.close()
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: createFakeAgentAdapter({ runUntilInterrupted: true }),
+      notify: recordNotification,
+    })
+    const session = await launchSession('/repo/a', 'long task')
+    // The scripted events have landed; the agent is still working.
+    await collectEvents(`/sessions/${session.id}/events`, 4)
+
+    const response = await interruptSession(session.id)
+
+    expect(response.status).toBe(200)
+    const interrupted = interruptSessionResponseSchema.parse(await response.json()).session
+    expect(interrupted.status).toBe('interrupted')
+
+    expect((await listSessions()).find((s) => s.id === session.id)?.status).toBe('interrupted')
+    const events = await collectEvents(`/sessions/${session.id}/events`, 5)
+    expect(events.at(-1)?.type).toBe('session_interrupted')
+  })
+
+  test('interrupting a finished Session returns 409', async () => {
+    const session = await launchSession('/repo/a', 'quick task')
+    await expect
+      .poll(async () => (await listSessions()).find((s) => s.id === session.id)?.status)
+      .toBe('completed')
+
+    expect((await interruptSession(session.id)).status).toBe(409)
+  })
+
+  test('interrupting an unknown Session returns 404', async () => {
+    expect((await interruptSession('unknown')).status).toBe(404)
   })
 })
 

@@ -66,6 +66,16 @@ export function createApp(options: {
     return c.json({ session })
   })
 
+  // The Operator cuts off a running Session's agent.
+  app.post('/sessions/:id/interrupt', async (c) => {
+    const result = await registry.interrupt(c.req.param('id'))
+    if (result.outcome === 'not_found') return c.notFound()
+    if (result.outcome === 'not_running') {
+      return c.json({ error: 'session is not running', session: result.session }, 409)
+    }
+    return c.json({ session: result.session })
+  })
+
   // Pending Decisions across all Sessions: the data behind the Decision Inbox.
   app.get('/decisions', (c) => {
     return c.json({ decisions: decisionQueue.pending() })

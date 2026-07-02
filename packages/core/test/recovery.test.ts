@@ -143,6 +143,25 @@ describe('restart recovery', () => {
     expect(queue.pending()).toHaveLength(1)
   })
 
+  test('an interrupted Session stays interrupted after recovery, with no spurious failure', async () => {
+    registry = createSessionRegistry({
+      dbPath,
+      eventLog,
+      adapter: createFakeAgentAdapter({ runUntilInterrupted: true }),
+      gate: createPermissionGate({ decisionQueue: queue }),
+    })
+    const session = await registry.launch({ repoPath: '/repo/a', prompt: 'long task' })
+    await registry.interrupt(session.id)
+    expect(registry.get(session.id)?.status).toBe('interrupted')
+
+    restart()
+
+    expect(registry.get(session.id)?.status).toBe('interrupted')
+    const types = eventLog.read({ sessionId: session.id }).map((e) => e.type)
+    expect(types.at(-1)).toBe('session_interrupted')
+    expect(types).not.toContain('session_failed')
+  })
+
   test('recover rebuilds the sessions Projection from the Event Log alone', async () => {
     createGatedRegistry([{ type: 'agent_initialized', sdkSessionId: 'sdk-123' }])
     const session = await registry.launch({ repoPath: '/repo/a', prompt: 'do the thing' })

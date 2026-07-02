@@ -2,7 +2,13 @@ import { z } from 'zod'
 
 // HTTP contracts shared between the Daemon and the CLI.
 
-export const sessionStatusSchema = z.enum(['running', 'waiting_on_human', 'completed', 'failed'])
+export const sessionStatusSchema = z.enum([
+  'running',
+  'waiting_on_human',
+  'completed',
+  'failed',
+  'interrupted',
+])
 
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
@@ -64,6 +70,10 @@ export const launchSessionResponseSchema = z.object({
 })
 
 export const getSessionResponseSchema = z.object({
+  session: sessionSchema,
+})
+
+export const interruptSessionResponseSchema = z.object({
   session: sessionSchema,
 })
 

@@ -9,6 +9,7 @@
   --waiting: #f59e0b;
   --completed: #22c55e;
   --failed: #ef4444;
+  --interrupted: #8b90a0;
 }
 
 * {
@@ -140,7 +141,7 @@ col.updated {
   font-variant-numeric: tabular-nums;
 }
 
-/* The four Session statuses, each distinct at a glance. */
+/* The Session statuses, each distinct at a glance. */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -186,6 +187,12 @@ col.updated {
   color: var(--failed);
   border-color: color-mix(in srgb, var(--failed) 40%, transparent);
   background: color-mix(in srgb, var(--failed) 12%, transparent);
+}
+
+.badge--interrupted {
+  color: var(--interrupted);
+  border-color: color-mix(in srgb, var(--interrupted) 40%, transparent);
+  background: color-mix(in srgb, var(--interrupted) 12%, transparent);
 }
 
 @keyframes pulse {
@@ -234,6 +241,30 @@ col.updated {
 
 .session-header .repo-path {
   font-size: 0.9rem;
+}
+
+/* The interrupt control: cut off a running Session's agent. */
+.interrupt-button {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+  color: var(--failed);
+  border-color: color-mix(in srgb, var(--failed) 45%, transparent);
+  background: color-mix(in srgb, var(--failed) 12%, transparent);
+}
+
+.interrupt-button:not(:disabled):hover {
+  background: color-mix(in srgb, var(--failed) 22%, transparent);
+}
+
+.interrupt-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .session-prompt {
@@ -439,7 +470,8 @@ col.updated {
 .entry--agent_initialized,
 .entry--decision_decided,
 .entry--session_completed,
-.entry--session_failed {
+.entry--session_failed,
+.entry--session_interrupted {
   background: transparent;
   border-style: dashed;
 }

@@ -11,10 +11,21 @@ export interface LaunchInput {
   prompt: string
 }
 
+export type InterruptResult =
+  | { outcome: 'interrupted'; session: Session }
+  | { outcome: 'not_running'; session: Session }
+  | { outcome: 'not_found' }
+
 export interface SessionRegistry {
   launch(input: LaunchInput): Promise<Session>
   get(id: string): Session | undefined
   list(): Session[]
+  /**
+   * Stops a running Session: terminates the agent run, records the
+   * interruption as a session_interrupted Event, and ends the Session
+   * in the interrupted status.
+   */
+  interrupt(id: string): Promise<InterruptResult>
   /**
    * Startup reconciliation: rebuilds the sessions Projection from the Event Log
    * and fails Sessions whose agent process died with the previous Daemon,
@@ -36,6 +47,8 @@ interface SessionRow {
 
 const launchedPayloadSchema = z.object({ repoPath: z.string(), prompt: z.string() })
 const initializedPayloadSchema = z.object({ sdkSessionId: z.string() })
+
+const terminalStatuses: ReadonlySet<string> = new Set(['completed', 'failed', 'interrupted'])
 
 function toSession(row: SessionRow): Session {
   return {
@@ -86,6 +99,11 @@ export function createSessionRegistry(options: {
 
   let closed = false
 
+  // Live agent runs by Session id. interrupt() claims a run by removing its
+  // entry; pump() writes nothing for a claimed run, so the interruption stays
+  // the Session's terminal Event.
+  const liveRuns = new Map<string, AgentRun>()
+
   function setStatus(id: string, status: SessionStatus): void {
     if (closed) return
     setStatusStmt.run(status, new Date().toISOString(), id)
@@ -94,21 +112,23 @@ export function createSessionRegistry(options: {
   async function pump(sessionId: string, run: AgentRun): Promise<void> {
     try {
       for await (const event of run.events) {
-        if (closed) return
+        if (closed || !liveRuns.has(sessionId)) return
         if (event.type === 'agent_initialized') {
           setSdkSessionIdStmt.run(event.sdkSessionId, new Date().toISOString(), sessionId)
         }
         const { type, ...payload } = event
         eventLog.append({ sessionId, type, payload })
       }
-      if (closed) return
+      if (closed || !liveRuns.has(sessionId)) return
       eventLog.append({ sessionId, type: 'session_completed', payload: {} })
       setStatus(sessionId, 'completed')
     } catch (error) {
-      if (closed) return
+      if (closed || !liveRuns.has(sessionId)) return
       const message = error instanceof Error ? error.message : String(error)
       eventLog.append({ sessionId, type: 'session_failed', payload: { error: message } })
       setStatus(sessionId, 'failed')
+    } finally {
+      liveRuns.delete(sessionId)
     }
   }
 
@@ -128,6 +148,7 @@ export function createSessionRegistry(options: {
           prompt: input.prompt,
           requestPermission: (request) => gate(id, request),
         })
+        liveRuns.set(id, run)
         void pump(id, run)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -144,6 +165,26 @@ export function createSessionRegistry(options: {
 
     list() {
       return (listStmt.all() as SessionRow[]).map(toSession)
+    },
+
+    async interrupt(id) {
+      const row = getStmt.get(id) as SessionRow | undefined
+      if (row === undefined) return { outcome: 'not_found' }
+      const run = liveRuns.get(id)
+      if (run === undefined) return { outcome: 'not_running', session: toSession(row) }
+      // Claim the run before stopping it, so pump() cannot slip a
+      // completed/failed Event in while the agent is shutting down.
+      liveRuns.delete(id)
+      try {
+        await run.interrupt()
+      } catch (error) {
+        // The agent was not stopped; hand the run back so a retry can reach it.
+        liveRuns.set(id, run)
+        throw error
+      }
+      eventLog.append({ sessionId: id, type: 'session_interrupted', payload: {} })
+      setStatus(id, 'interrupted')
+      return { outcome: 'interrupted', session: toSession(getStmt.get(id) as SessionRow) }
     },
 
     recover() {
@@ -177,6 +218,9 @@ export function createSessionRegistry(options: {
         } else if (event.type === 'session_failed') {
           row.status = 'failed'
           row.updated_at = event.ts
+        } else if (event.type === 'session_interrupted') {
+          row.status = 'interrupted'
+          row.updated_at = event.ts
         }
       }
 
@@ -184,7 +228,7 @@ export function createSessionRegistry(options: {
       // the previous Daemon. Record the failure in the Event Log first - the
       // log is the source of truth, and the Transcript shows why it ended.
       for (const row of rows.values()) {
-        if (row.status === 'completed' || row.status === 'failed') continue
+        if (terminalStatuses.has(row.status)) continue
         const failed = eventLog.append({
           sessionId: row.id,
           type: 'session_failed',

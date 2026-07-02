@@ -11,7 +11,7 @@
  * @property {string} id
  * @property {string} repoPath
  * @property {string} prompt
- * @property {'running' | 'waiting_on_human' | 'completed' | 'failed'} status
+ * @property {'running' | 'waiting_on_human' | 'completed' | 'failed' | 'interrupted'} status
  * @property {string | null} sdkSessionId
  * @property {string} createdAt
  * @property {string} updatedAt
@@ -47,6 +47,7 @@ const STATUS_LABELS = {
   waiting_on_human: 'waiting on human',
   completed: 'completed',
   failed: 'failed',
+  interrupted: 'interrupted',
 }
 
 const appRoot = /** @type {HTMLElement} */ (document.getElementById('app'))
@@ -274,6 +275,9 @@ function renderEntry(event) {
     case 'session_failed':
       body.append(marker(`session failed - ${String(event.payload?.error ?? 'unknown error')}`))
       break
+    case 'session_interrupted':
+      body.append(marker('session interrupted by the operator'))
+      break
     default:
       // Future Event types still show up rather than silently disappearing.
       body.append(kindLabel(event.type), codeBlock(JSON.stringify(event.payload, null, 2)))
@@ -386,7 +390,12 @@ function renderDetailScreen(sessionId) {
   const badgeSlot = document.createElement('span')
   const repo = document.createElement('code')
   repo.className = 'repo-path'
-  sessionHeader.append(badgeSlot, repo)
+  const interrupt = document.createElement('button')
+  interrupt.type = 'button'
+  interrupt.className = 'interrupt-button'
+  interrupt.textContent = 'Interrupt'
+  interrupt.hidden = true
+  sessionHeader.append(badgeSlot, repo, interrupt)
 
   const prompt = document.createElement('p')
   prompt.className = 'session-prompt'
@@ -414,7 +423,26 @@ function renderDetailScreen(sessionId) {
   /** @param {Session['status']} status */
   function setStatus(status) {
     badgeSlot.replaceChildren(statusBadge(status))
+    // The control shows only while there is a run to stop.
+    interrupt.hidden = status !== 'running' && status !== 'waiting_on_human'
   }
+
+  async function sendInterrupt() {
+    interrupt.disabled = true
+    try {
+      const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+        method: 'POST',
+      })
+      // 409 means the Session already ended; its terminal Event updates the screen.
+      if (!response.ok && response.status !== 409) {
+        throw new Error(`daemon returned ${response.status}`)
+      }
+    } catch {
+      interrupt.disabled = false
+    }
+  }
+
+  interrupt.addEventListener('click', () => void sendInterrupt())
 
   /** Pending Decision cards in the banner, keyed by Decision id. */
   /** @type {Map<string, HTMLElement>} */
@@ -467,6 +495,7 @@ function renderDetailScreen(sessionId) {
       if (event.type === 'decision_decided') clearDecision(event)
       if (event.type === 'session_completed') setStatus('completed')
       if (event.type === 'session_failed') setStatus('failed')
+      if (event.type === 'session_interrupted') setStatus('interrupted')
     }
   }
 

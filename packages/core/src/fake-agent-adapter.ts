@@ -15,6 +15,8 @@ export interface FakeAgentAdapterOptions {
   script?: FakeAgentStep[]
   /** When set, the fake agent dies with this error message after emitting the script. */
   failWith?: string
+  /** When true, the fake agent keeps working after the script until interrupted, like a long real run. */
+  runUntilInterrupted?: boolean
 }
 
 export const defaultFakeScript: AdapterEvent[] = [
@@ -27,9 +29,15 @@ export function createFakeAgentAdapter(options: FakeAgentAdapterOptions = {}): A
   const script = options.script ?? defaultFakeScript
   return {
     async launch(input) {
+      let interrupted = false
+      let onInterrupt = (): void => {}
+      const interruption = new Promise<void>((resolve) => {
+        onInterrupt = resolve
+      })
       return {
         events: (async function* () {
           for (const step of script) {
+            if (interrupted) return
             if (step.type === 'gated_tool_call') {
               const verdict = await input.requestPermission({
                 toolName: step.toolName,
@@ -47,11 +55,19 @@ export function createFakeAgentAdapter(options: FakeAgentAdapterOptions = {}): A
             }
             yield step
           }
+          if (options.runUntilInterrupted) {
+            await interruption
+            return
+          }
           if (options.failWith !== undefined) {
             throw new Error(options.failWith)
           }
         })(),
-        async interrupt() {},
+        // As on the real platform: once interrupt resolves, the run's event stream ends.
+        async interrupt() {
+          interrupted = true
+          onInterrupt()
+        },
         async resume() {},
       }
     },

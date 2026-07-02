@@ -7,7 +7,7 @@ Use these names in code, tests, issues, and docs.
 
 - **HQ**: this product - a local-first control plane where the Operator commands, monitors, and gates a fleet of agent sessions.
 - **Operator**: the human running HQ (Daniel). The only actor in the system.
-- **Session**: one delegated unit of agent work - an agent run against a repo with a task prompt. Lifecycle: `running` -> `waiting_on_human` -> `completed` / `failed`.
+- **Session**: one delegated unit of agent work - an agent run against a repo with a task prompt. Lifecycle: `running` -> `waiting_on_human` -> `completed` / `failed` / `interrupted` (the Operator cut it off).
 - **Event**: one immutable record of something a session did (message, tool call, lifecycle change). Events are append-only.
 - **Event Log**: the source of truth. An append-only store of Events; everything else is a Projection over it.
 - **Projection**: derived, rebuildable state (session list, decision list) computed from the Event Log.
