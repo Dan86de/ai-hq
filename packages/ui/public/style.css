@@ -1,0 +1,174 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1117;
+  --surface: #171a23;
+  --border: #262b38;
+  --text: #e6e8ee;
+  --text-dim: #8b90a0;
+  --running: #3b82f6;
+  --waiting: #f59e0b;
+  --completed: #22c55e;
+  --failed: #ef4444;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: 0.02em;
+}
+
+h2 {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.connection {
+  color: var(--failed);
+  font-size: 0.85rem;
+}
+
+main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.empty {
+  color: var(--text-dim);
+  padding: 2rem 0;
+}
+
+.empty code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+col.status {
+  width: 11rem;
+}
+
+col.repo {
+  width: 30%;
+}
+
+col.updated {
+  width: 7rem;
+}
+
+.repo-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.updated {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The four Session statuses, each distinct at a glance. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: 1px solid;
+}
+
+.badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge--running {
+  color: var(--running);
+  border-color: color-mix(in srgb, var(--running) 40%, transparent);
+  background: color-mix(in srgb, var(--running) 12%, transparent);
+}
+
+.badge--running::before {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.badge--waiting_on_human {
+  color: var(--waiting);
+  border-color: color-mix(in srgb, var(--waiting) 40%, transparent);
+  background: color-mix(in srgb, var(--waiting) 12%, transparent);
+}
+
+.badge--completed {
+  color: var(--completed);
+  border-color: color-mix(in srgb, var(--completed) 40%, transparent);
+  background: color-mix(in srgb, var(--completed) 12%, transparent);
+}
+
+.badge--failed {
+  color: var(--failed);
+  border-color: color-mix(in srgb, var(--failed) 40%, transparent);
+  background: color-mix(in srgb, var(--failed) 12%, transparent);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}

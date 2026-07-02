@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { Command } from 'commander'
 import {
@@ -15,7 +16,7 @@ function summarizePrompt(prompt: string): string {
   return flat.length <= PROMPT_SUMMARY_LENGTH ? flat : `${flat.slice(0, PROMPT_SUMMARY_LENGTH - 3)}...`
 }
 
-async function request(path: string, init?: RequestInit): Promise<unknown> {
+async function fetchOrExit(path: string, init?: RequestInit): Promise<Response> {
   let response: Response
   try {
     response = await fetch(`${baseUrl}${path}`, init)
@@ -27,7 +28,35 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
     console.error(`hq daemon returned ${response.status}: ${await response.text()}`)
     process.exit(1)
   }
-  return response.json()
+  return response
+}
+
+async function request(path: string, init?: RequestInit): Promise<unknown> {
+  return (await fetchOrExit(path, init)).json()
+}
+
+function browserCommand(url: string): { command: string; args: string[] } {
+  const browser = process.env['BROWSER']
+  if (browser !== undefined && browser !== '') return { command: browser, args: [url] }
+  switch (process.platform) {
+    case 'darwin':
+      return { command: 'open', args: [url] }
+    case 'win32':
+      return { command: 'cmd', args: ['/c', 'start', '', url] }
+    default:
+      return { command: 'xdg-open', args: [url] }
+  }
+}
+
+function openInBrowser(url: string): Promise<void> {
+  const { command, args } = browserCommand(url)
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: 'ignore' })
+    child.on('error', reject)
+    child.on('exit', (code) =>
+      code === 0 ? resolvePromise() : reject(new Error(`${command} exited with code ${code}`)),
+    )
+  })
 }
 
 function printSessions(sessions: Session[]): void {
@@ -65,6 +94,21 @@ program
     })
     const { session } = launchSessionResponseSchema.parse(json)
     console.log(session.id)
+  })
+
+program
+  .command('open')
+  .description('open the HQ web UI in the default browser')
+  .action(async () => {
+    await fetchOrExit('/')
+    try {
+      await openInBrowser(baseUrl)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`could not open the browser: ${message}`)
+      process.exit(1)
+    }
+    console.log(baseUrl)
   })
 
 program

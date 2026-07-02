@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,9 +25,9 @@ afterAll(async () => {
   rmSync(dataDir, { recursive: true, force: true })
 })
 
-function hq(args: string[], hqUrl = `http://127.0.0.1:${daemon.port}`) {
+function hq(args: string[], envOverrides: Record<string, string> = {}) {
   return execFileAsync(process.execPath, [hqBin, ...args], {
-    env: { ...process.env, HQ_URL: hqUrl },
+    env: { ...process.env, HQ_URL: `http://127.0.0.1:${daemon.port}`, ...envOverrides },
     timeout: 30_000,
   })
 }
@@ -61,7 +61,27 @@ describe('hq CLI', { timeout: 60_000 }, () => {
   })
 
   test('hq fails with a clear error when the daemon is not reachable', async () => {
-    const result = hq(['ls'], 'http://127.0.0.1:1')
+    const result = hq(['ls'], { HQ_URL: 'http://127.0.0.1:1' })
+    await expect(result).rejects.toMatchObject({ code: 1 })
+    await expect(result).rejects.toMatchObject({
+      stderr: expect.stringContaining('hq daemon is not reachable'),
+    })
+  })
+
+  test('hq open opens the UI in the browser via $BROWSER and prints the URL', async () => {
+    const recorder = join(dataDir, 'record-browser.sh')
+    const openedUrlFile = join(dataDir, 'opened-url')
+    writeFileSync(recorder, `#!/bin/sh\nprintf '%s' "$1" > '${openedUrlFile}'\n`, { mode: 0o755 })
+
+    const { stdout } = await hq(['open'], { BROWSER: recorder })
+
+    const hqUrl = `http://127.0.0.1:${daemon.port}`
+    expect(readFileSync(openedUrlFile, 'utf8')).toBe(hqUrl)
+    expect(stdout.trim()).toBe(hqUrl)
+  })
+
+  test('hq open fails clearly when the daemon is not reachable and opens nothing', async () => {
+    const result = hq(['open'], { HQ_URL: 'http://127.0.0.1:1', BROWSER: 'false' })
     await expect(result).rejects.toMatchObject({ code: 1 })
     await expect(result).rejects.toMatchObject({
       stderr: expect.stringContaining('hq daemon is not reachable'),
