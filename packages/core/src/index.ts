@@ -20,6 +20,7 @@ export {
   decisionSchema,
   decisionStatusSchema,
   getSessionResponseSchema,
+  interruptSessionResponseSchema,
   launchSessionRequestSchema,
   launchSessionResponseSchema,
   listDecisionsResponseSchema,
@@ -51,4 +52,9 @@ export {
   defaultAllowlist,
   type PermissionGate,
 } from './permission-gate.ts'
-export { createSessionRegistry, type LaunchInput, type SessionRegistry } from './session-registry.ts'
+export {
+  createSessionRegistry,
+  type InterruptResult,
+  type LaunchInput,
+  type SessionRegistry,
+} from './session-registry.ts'

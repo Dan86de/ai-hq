@@ -4,11 +4,14 @@ import type { AdapterEvent, AgentAdapter } from './agent-adapter.ts'
  * A script step the fake agent performs. A plain AdapterEvent is emitted as-is;
  * a gated_tool_call first asks the permission callback, the way the real
  * platform does: approved calls execute (a tool_call event), denied calls make
- * the agent adjust course with the Operator's note (an agent_message event).
+ * the agent adjust course with the Operator's note (an agent_message event);
+ * a hang keeps the run open, emitting nothing, until interrupt() - the way a
+ * long-running agent stays busy.
  */
 export type FakeAgentStep =
   | AdapterEvent
   | { type: 'gated_tool_call'; toolName: string; input: unknown }
+  | { type: 'hang' }
 
 export interface FakeAgentAdapterOptions {
   /** Steps the fake agent performs, in order. Defaults to a small scripted run. */
@@ -27,9 +30,19 @@ export function createFakeAgentAdapter(options: FakeAgentAdapterOptions = {}): A
   const script = options.script ?? defaultFakeScript
   return {
     async launch(input) {
+      // Per run, so parallel fake runs interrupt independently.
+      let interrupted = false
+      let wakeHang = (): void => {}
       return {
         events: (async function* () {
           for (const step of script) {
+            if (interrupted) return
+            if (step.type === 'hang') {
+              await new Promise<void>((resolve) => {
+                wakeHang = resolve
+              })
+              continue
+            }
             if (step.type === 'gated_tool_call') {
               const verdict = await input.requestPermission({
                 toolName: step.toolName,
@@ -47,11 +60,15 @@ export function createFakeAgentAdapter(options: FakeAgentAdapterOptions = {}): A
             }
             yield step
           }
+          if (interrupted) return
           if (options.failWith !== undefined) {
             throw new Error(options.failWith)
           }
         })(),
-        async interrupt() {},
+        async interrupt() {
+          interrupted = true
+          wakeHang()
+        },
         async resume() {},
       }
     },

@@ -11,10 +11,20 @@ export interface LaunchInput {
   prompt: string
 }
 
+export type InterruptResult =
+  | { outcome: 'interrupted'; session: Session }
+  | { outcome: 'not_found' }
+  | { outcome: 'not_running'; session: Session }
+
 export interface SessionRegistry {
   launch(input: LaunchInput): Promise<Session>
   get(id: string): Session | undefined
   list(): Session[]
+  /**
+   * Stops a running Session's agent through the AgentAdapter, records the
+   * interruption as a session_interrupted Event, and ends the Session failed.
+   */
+  interrupt(id: string): Promise<InterruptResult>
   /**
    * Startup reconciliation: rebuilds the sessions Projection from the Event Log
    * and fails Sessions whose agent process died with the previous Daemon,
@@ -85,6 +95,11 @@ export function createSessionRegistry(options: {
   )
 
   let closed = false
+  // Live AgentRuns by Session id, so interrupt can reach the agent process.
+  const activeRuns = new Map<string, AgentRun>()
+  // Once a Session is interrupted, its terminal Event is interrupt()'s to write;
+  // the unwinding pump must not add a session_completed or session_failed of its own.
+  const interruptedIds = new Set<string>()
 
   function setStatus(id: string, status: SessionStatus): void {
     if (closed) return
@@ -94,21 +109,23 @@ export function createSessionRegistry(options: {
   async function pump(sessionId: string, run: AgentRun): Promise<void> {
     try {
       for await (const event of run.events) {
-        if (closed) return
+        if (closed || interruptedIds.has(sessionId)) return
         if (event.type === 'agent_initialized') {
           setSdkSessionIdStmt.run(event.sdkSessionId, new Date().toISOString(), sessionId)
         }
         const { type, ...payload } = event
         eventLog.append({ sessionId, type, payload })
       }
-      if (closed) return
+      if (closed || interruptedIds.has(sessionId)) return
       eventLog.append({ sessionId, type: 'session_completed', payload: {} })
       setStatus(sessionId, 'completed')
     } catch (error) {
-      if (closed) return
+      if (closed || interruptedIds.has(sessionId)) return
       const message = error instanceof Error ? error.message : String(error)
       eventLog.append({ sessionId, type: 'session_failed', payload: { error: message } })
       setStatus(sessionId, 'failed')
+    } finally {
+      activeRuns.delete(sessionId)
     }
   }
 
@@ -128,6 +145,7 @@ export function createSessionRegistry(options: {
           prompt: input.prompt,
           requestPermission: (request) => gate(id, request),
         })
+        activeRuns.set(id, run)
         void pump(id, run)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -144,6 +162,23 @@ export function createSessionRegistry(options: {
 
     list() {
       return (listStmt.all() as SessionRow[]).map(toSession)
+    },
+
+    async interrupt(id) {
+      const row = getStmt.get(id) as SessionRow | undefined
+      if (row === undefined) return { outcome: 'not_found' }
+      const run = activeRuns.get(id)
+      if (run === undefined) return { outcome: 'not_running', session: toSession(row) }
+      interruptedIds.add(id)
+      activeRuns.delete(id)
+      try {
+        await run.interrupt()
+      } catch {
+        // The Session is over for HQ either way; the Event below records the interruption.
+      }
+      eventLog.append({ sessionId: id, type: 'session_interrupted', payload: {} })
+      setStatus(id, 'failed')
+      return { outcome: 'interrupted', session: toSession(getStmt.get(id) as SessionRow) }
     },
 
     recover() {
@@ -174,7 +209,8 @@ export function createSessionRegistry(options: {
         } else if (event.type === 'session_completed') {
           row.status = 'completed'
           row.updated_at = event.ts
-        } else if (event.type === 'session_failed') {
+        } else if (event.type === 'session_failed' || event.type === 'session_interrupted') {
+          // An interruption ends the Session failed, same as at interrupt time.
           row.status = 'failed'
           row.updated_at = event.ts
         }

@@ -121,3 +121,55 @@ describe('session registry', () => {
     expect(events.at(-1)?.payload).toEqual({ error: 'no agent binary' })
   })
 })
+
+describe('interrupt', () => {
+  test('interrupt stops the running agent, records the interruption, and fails the session', async () => {
+    createRegistry(
+      createFakeAgentAdapter({
+        script: [
+          { type: 'agent_message', text: 'Working on it.' },
+          { type: 'hang' },
+          { type: 'agent_message', text: 'never reached' },
+        ],
+      }),
+    )
+    const session = await registry.launch({ repoPath: '/repo/a', prompt: 'wrong direction' })
+    await expect.poll(() => eventLog.read({ sessionId: session.id })).toHaveLength(2)
+
+    const result = await registry.interrupt(session.id)
+
+    expect(result.outcome).toBe('interrupted')
+    if (result.outcome !== 'interrupted') throw new Error('unreachable')
+    expect(result.session.status).toBe('failed')
+    expect(registry.get(session.id)?.status).toBe('failed')
+
+    // The agent stopped for real and the unwinding pump added no terminal Event
+    // of its own: the log ends at session_interrupted, with nothing after it.
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(eventLog.read({ sessionId: session.id }).map((e) => e.type)).toEqual([
+      'session_launched',
+      'agent_message',
+      'session_interrupted',
+    ])
+  })
+
+  test('interrupting a finished session reports not_running and appends nothing', async () => {
+    createRegistry(createFakeAgentAdapter())
+    const session = await registry.launch({ repoPath: '/repo/a', prompt: 'task' })
+    await expect.poll(() => registry.get(session.id)?.status).toBe('completed')
+    const before = eventLog.read({ sessionId: session.id })
+
+    const result = await registry.interrupt(session.id)
+
+    expect(result.outcome).toBe('not_running')
+    if (result.outcome !== 'not_running') throw new Error('unreachable')
+    expect(result.session.status).toBe('completed')
+    expect(eventLog.read({ sessionId: session.id })).toEqual(before)
+  })
+
+  test('interrupting an unknown session reports not_found', async () => {
+    createRegistry(createFakeAgentAdapter())
+
+    expect(await registry.interrupt('unknown')).toEqual({ outcome: 'not_found' })
+  })
+})

@@ -8,6 +8,7 @@ import {
   decideDecisionResponseSchema,
   getSessionResponseSchema,
   hqEventSchema,
+  interruptSessionResponseSchema,
   launchSessionResponseSchema,
   listDecisionsResponseSchema,
   listSessionsResponseSchema,
@@ -256,6 +257,61 @@ describe('daemon HTTP API', () => {
     } finally {
       eventLog.close()
     }
+  })
+})
+
+describe('interrupting a Session over HTTP', () => {
+  const hangingScript: FakeAgentStep[] = [
+    { type: 'agent_message', text: 'Working on it.' },
+    { type: 'hang' },
+  ]
+
+  async function interruptSession(id: string): Promise<Response> {
+    return fetch(url(`/sessions/${id}/interrupt`), { method: 'POST' })
+  }
+
+  test('POST /sessions/:id/interrupt stops the Session; the Event and the failed status land', async () => {
+    await daemon.close()
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: createFakeAgentAdapter({ script: hangingScript }),
+      notify: recordNotification,
+    })
+    const session = await launchSession('/repo/a', 'wrong direction')
+    // Wait until the agent is mid-flight, parked at the hang.
+    await collectEvents(`/sessions/${session.id}/events`, 2)
+
+    const response = await interruptSession(session.id)
+
+    expect(response.status).toBe(200)
+    const interrupted = interruptSessionResponseSchema.parse(await response.json()).session
+    expect(interrupted.status).toBe('failed')
+
+    const events = await collectEvents(`/sessions/${session.id}/events`, 3)
+    expect(events.map((e) => e.type)).toEqual([
+      'session_launched',
+      'agent_message',
+      'session_interrupted',
+    ])
+    expect((await listSessions()).find((s) => s.id === session.id)?.status).toBe('failed')
+  })
+
+  test('interrupting a finished Session returns 409 with the Session', async () => {
+    const session = await launchSession('/repo/a', 'quick task')
+    await expect
+      .poll(async () => (await listSessions()).find((s) => s.id === session.id)?.status)
+      .toBe('completed')
+
+    const response = await interruptSession(session.id)
+
+    expect(response.status).toBe(409)
+    const body = (await response.json()) as { session: unknown }
+    expect(body.session).toMatchObject({ id: session.id, status: 'completed' })
+  })
+
+  test('interrupting an unknown Session returns 404', async () => {
+    expect((await interruptSession('unknown')).status).toBe(404)
   })
 })
 

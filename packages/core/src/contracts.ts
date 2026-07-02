@@ -67,6 +67,10 @@ export const getSessionResponseSchema = z.object({
   session: sessionSchema,
 })
 
+export const interruptSessionResponseSchema = z.object({
+  session: sessionSchema,
+})
+
 export const listSessionsResponseSchema = z.object({
   sessions: z.array(sessionSchema),
 })

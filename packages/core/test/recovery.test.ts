@@ -143,6 +143,23 @@ describe('restart recovery', () => {
     expect(queue.pending()).toHaveLength(1)
   })
 
+  test('an interrupted Session stays failed after recovery, with no extra Events', async () => {
+    createGatedRegistry([{ type: 'agent_message', text: 'Working on it.' }, { type: 'hang' }])
+    const session = await registry.launch({ repoPath: '/repo/a', prompt: 'wrong direction' })
+    await expect.poll(() => eventLog.read({ sessionId: session.id })).toHaveLength(2)
+    await registry.interrupt(session.id)
+
+    restart()
+
+    // session_interrupted is terminal: recovery must not fail the Session again.
+    expect(registry.get(session.id)?.status).toBe('failed')
+    expect(eventLog.read({ sessionId: session.id }).map((e) => e.type)).toEqual([
+      'session_launched',
+      'agent_message',
+      'session_interrupted',
+    ])
+  })
+
   test('recover rebuilds the sessions Projection from the Event Log alone', async () => {
     createGatedRegistry([{ type: 'agent_initialized', sdkSessionId: 'sdk-123' }])
     const session = await registry.launch({ repoPath: '/repo/a', prompt: 'do the thing' })

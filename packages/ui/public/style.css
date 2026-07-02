@@ -242,6 +242,29 @@ col.updated {
   overflow-wrap: anywhere;
 }
 
+/* The interrupt control: cut off a Session heading in the wrong direction. */
+.interrupt-button {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--failed) 45%, transparent);
+  border-radius: 4px;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+  color: var(--failed);
+  background: color-mix(in srgb, var(--failed) 12%, transparent);
+}
+
+.interrupt-button:not(:disabled):hover {
+  background: color-mix(in srgb, var(--failed) 22%, transparent);
+}
+
+.interrupt-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* The pending Decision banner: rule on a Gated tool call with full context. */
 .decisions {
   display: flex;
@@ -439,6 +462,7 @@ col.updated {
 .entry--agent_initialized,
 .entry--decision_decided,
 .entry--session_completed,
+.entry--session_interrupted,
 .entry--session_failed {
   background: transparent;
   border-style: dashed;
@@ -447,6 +471,11 @@ col.updated {
 .marker {
   color: var(--text-dim);
   font-size: 0.85rem;
+}
+
+/* Deliberately stopped by the Operator: human-intervention amber, not crash red. */
+.entry--session_interrupted .marker {
+  color: var(--waiting);
 }
 
 .entry--session_failed .marker {
