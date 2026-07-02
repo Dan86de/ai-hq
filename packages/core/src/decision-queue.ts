@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import Database, { type Statement } from 'better-sqlite3'
+import { z } from 'zod'
 import type { Decision, DecisionStatus, Verdict } from './contracts.ts'
 import type { EventLog } from './event-log.ts'
 
@@ -24,6 +25,12 @@ export interface DecisionQueue {
   decide(id: string, verdict: Verdict): DecideResult
   /** Pending Decisions, oldest first; per Session when an id is given, across all Sessions otherwise. */
   pending(sessionId?: string): Decision[]
+  /**
+   * Startup reconciliation: rebuilds the decisions Projection from the Event Log.
+   * A Decision pending when the previous Daemon died stays pending and
+   * reviewable. Call before any request parks.
+   */
+  recover(): void
   close(): void
 }
 
@@ -37,6 +44,17 @@ interface DecisionRow {
   created_at: string
   decided_at: string | null
 }
+
+const requestedPayloadSchema = z.object({
+  decisionId: z.string(),
+  toolName: z.string(),
+  input: z.unknown(),
+})
+const decidedPayloadSchema = z.object({
+  decisionId: z.string(),
+  status: z.enum(['approved', 'denied']),
+  note: z.string().nullable(),
+})
 
 function toDecision(row: DecisionRow): Decision {
   return {
@@ -156,6 +174,52 @@ export function createDecisionQueue(options: { dbPath: string; eventLog: EventLo
       const rows =
         sessionId === undefined ? pendingAllStmt.all() : pendingBySessionStmt.all(sessionId)
       return (rows as DecisionRow[]).map(toDecision)
+    },
+
+    recover() {
+      // Decisions are a Projection: compute every row from the Event Log alone.
+      const rows = new Map<string, DecisionRow>()
+      for (const event of eventLog.read()) {
+        if (event.type === 'decision_requested') {
+          const payload = requestedPayloadSchema.safeParse(event.payload)
+          if (!payload.success) continue
+          rows.set(payload.data.decisionId, {
+            id: payload.data.decisionId,
+            session_id: event.sessionId,
+            tool_name: payload.data.toolName,
+            input: JSON.stringify(payload.data.input ?? null),
+            status: 'pending',
+            note: null,
+            created_at: event.ts,
+            decided_at: null,
+          })
+        } else if (event.type === 'decision_decided') {
+          const payload = decidedPayloadSchema.safeParse(event.payload)
+          if (!payload.success) continue
+          const row = rows.get(payload.data.decisionId)
+          if (row === undefined) continue
+          row.status = payload.data.status
+          row.note = payload.data.note
+          row.decided_at = event.ts
+        }
+      }
+
+      const rebuild = db.transaction((all: DecisionRow[]) => {
+        db.prepare('DELETE FROM decisions').run()
+        for (const row of all) {
+          insertStmt.run(
+            row.id,
+            row.session_id,
+            row.tool_name,
+            row.input,
+            row.status,
+            row.note,
+            row.created_at,
+            row.decided_at,
+          )
+        }
+      })
+      rebuild([...rows.values()])
     },
 
     close() {

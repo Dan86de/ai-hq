@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { z } from 'zod'
 import type { AgentAdapter, AgentRun } from './agent-adapter.ts'
 import type { Session, SessionStatus } from './contracts.ts'
 import type { EventLog } from './event-log.ts'
@@ -14,6 +15,12 @@ export interface SessionRegistry {
   launch(input: LaunchInput): Promise<Session>
   get(id: string): Session | undefined
   list(): Session[]
+  /**
+   * Startup reconciliation: rebuilds the sessions Projection from the Event Log
+   * and fails Sessions whose agent process died with the previous Daemon,
+   * recording each failure as a session_failed Event. Call before any launch.
+   */
+  recover(): void
   close(): void
 }
 
@@ -26,6 +33,9 @@ interface SessionRow {
   created_at: string
   updated_at: string
 }
+
+const launchedPayloadSchema = z.object({ repoPath: z.string(), prompt: z.string() })
+const initializedPayloadSchema = z.object({ sdkSessionId: z.string() })
 
 function toSession(row: SessionRow): Session {
   return {
@@ -134,6 +144,71 @@ export function createSessionRegistry(options: {
 
     list() {
       return (listStmt.all() as SessionRow[]).map(toSession)
+    },
+
+    recover() {
+      // Sessions are a Projection: compute every row from the Event Log alone.
+      const rows = new Map<string, SessionRow>()
+      for (const event of eventLog.read()) {
+        if (event.type === 'session_launched') {
+          const payload = launchedPayloadSchema.safeParse(event.payload)
+          rows.set(event.sessionId, {
+            id: event.sessionId,
+            repo_path: payload.success ? payload.data.repoPath : '',
+            prompt: payload.success ? payload.data.prompt : '',
+            status: 'running',
+            sdk_session_id: null,
+            created_at: event.ts,
+            updated_at: event.ts,
+          })
+          continue
+        }
+        const row = rows.get(event.sessionId)
+        if (row === undefined) continue
+        if (event.type === 'agent_initialized') {
+          const payload = initializedPayloadSchema.safeParse(event.payload)
+          if (payload.success) {
+            row.sdk_session_id = payload.data.sdkSessionId
+            row.updated_at = event.ts
+          }
+        } else if (event.type === 'session_completed') {
+          row.status = 'completed'
+          row.updated_at = event.ts
+        } else if (event.type === 'session_failed') {
+          row.status = 'failed'
+          row.updated_at = event.ts
+        }
+      }
+
+      // A Session the log leaves non-terminal had its agent process die with
+      // the previous Daemon. Record the failure in the Event Log first - the
+      // log is the source of truth, and the Transcript shows why it ended.
+      for (const row of rows.values()) {
+        if (row.status === 'completed' || row.status === 'failed') continue
+        const failed = eventLog.append({
+          sessionId: row.id,
+          type: 'session_failed',
+          payload: { error: 'Daemon restarted while the Session was running' },
+        })
+        row.status = 'failed'
+        row.updated_at = failed.ts
+      }
+
+      const rebuild = db.transaction((all: SessionRow[]) => {
+        db.prepare('DELETE FROM sessions').run()
+        for (const row of all) {
+          insertStmt.run(
+            row.id,
+            row.repo_path,
+            row.prompt,
+            row.status,
+            row.sdk_session_id,
+            row.created_at,
+            row.updated_at,
+          )
+        }
+      })
+      rebuild([...rows.values()])
     },
 
     close() {

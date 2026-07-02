@@ -66,6 +66,20 @@ async function listSessions() {
   return listSessionsResponseSchema.parse(await response.json()).sessions
 }
 
+async function getPendingDecisions(path: string) {
+  const response = await fetch(url(path))
+  expect(response.status).toBe(200)
+  return listDecisionsResponseSchema.parse(await response.json()).decisions
+}
+
+async function sendVerdict(decisionId: string, verdict: Verdict): Promise<Response> {
+  return fetch(url(`/decisions/${decisionId}/verdict`), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(verdict),
+  })
+}
+
 /** An AgentAdapter whose run the test drives event by event. Supports one run at a time. */
 function createManualAdapter() {
   const queue: (AdapterEvent | 'end')[] = []
@@ -258,20 +272,6 @@ describe('gating over HTTP', () => {
       port: 0,
       adapter: createFakeAgentAdapter({ script }),
       notify: recordNotification,
-    })
-  }
-
-  async function getPendingDecisions(path: string) {
-    const response = await fetch(url(path))
-    expect(response.status).toBe(200)
-    return listDecisionsResponseSchema.parse(await response.json()).decisions
-  }
-
-  async function sendVerdict(decisionId: string, verdict: Verdict): Promise<Response> {
-    return fetch(url(`/decisions/${decisionId}/verdict`), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(verdict),
     })
   }
 
@@ -503,5 +503,98 @@ describe('GET /sessions/:id/events (SSE)', () => {
 
   test('returns 404 for an unknown session', async () => {
     expect((await fetch(url('/sessions/unknown/events'))).status).toBe(404)
+  })
+})
+
+describe('restart recovery', () => {
+  const midFlightScript: FakeAgentStep[] = [
+    { type: 'agent_message', text: 'Working on it.' },
+    { type: 'gated_tool_call', toolName: 'Bash', input: { command: 'rm -rf build' } },
+  ]
+
+  /** Brings the Daemon back over the same data dir, as a relaunch after a kill does. */
+  async function restartDaemon(adapter: AgentAdapter): Promise<void> {
+    await daemon.close()
+    daemon = await startDaemon({ dataDir, port: 0, adapter, notify: recordNotification })
+  }
+
+  test('kill mid-Session and restart: the Session is failed, the pending Decision and Transcript survive', async () => {
+    await restartDaemon(createFakeAgentAdapter({ script: midFlightScript }))
+    const session = await launchSession('/repo/a', 'clean the build')
+    await expect.poll(() => getPendingDecisions('/decisions')).toHaveLength(1)
+    const parked = (await getPendingDecisions('/decisions'))[0]!
+
+    await restartDaemon(createFakeAgentAdapter())
+
+    // The Session shows failed, not running.
+    const fetched = getSessionResponseSchema.parse(
+      await (await fetch(url(`/sessions/${session.id}`))).json(),
+    ).session
+    expect(fetched.status).toBe('failed')
+
+    // The Decision is still a reviewable record.
+    expect(await getPendingDecisions('/decisions')).toMatchObject([
+      {
+        id: parked.id,
+        sessionId: session.id,
+        toolName: 'Bash',
+        input: { command: 'rm -rf build' },
+        status: 'pending',
+      },
+    ])
+
+    // The full Transcript up to the kill is readable, closed by the recovery failure.
+    const events = await collectEvents(`/sessions/${session.id}/events`, 4)
+    expect(events.map((e) => e.type)).toEqual([
+      'session_launched',
+      'agent_message',
+      'decision_requested',
+      'session_failed',
+    ])
+    expect(events.at(-1)?.payload).toEqual({
+      error: 'Daemon restarted while the Session was running',
+    })
+  })
+
+  test('a Session still running at the kill is failed after restart, its Transcript intact', async () => {
+    await daemon.close()
+    const manual = createManualAdapter()
+    daemon = await startDaemon({
+      dataDir,
+      port: 0,
+      adapter: manual.adapter,
+      notify: recordNotification,
+    })
+    const session = await launchSession('/repo/a', 'long task')
+    manual.emit({ type: 'agent_message', text: 'still going' })
+    const log = createEventLog({ dbPath: daemon.dbPath })
+    try {
+      await expect.poll(() => log.read({ sessionId: session.id })).toHaveLength(2)
+    } finally {
+      log.close()
+    }
+
+    await restartDaemon(createFakeAgentAdapter())
+
+    expect((await listSessions()).find((s) => s.id === session.id)?.status).toBe('failed')
+    const events = await collectEvents(`/sessions/${session.id}/events`, 3)
+    expect(events.map((e) => e.type)).toEqual([
+      'session_launched',
+      'agent_message',
+      'session_failed',
+    ])
+  })
+
+  test('the Operator is notified when recovery fails a Session', async () => {
+    await restartDaemon(createFakeAgentAdapter({ script: midFlightScript }))
+    await launchSession('/repo/a', 'clean the build')
+    await expect.poll(() => getPendingDecisions('/decisions')).toHaveLength(1)
+
+    await restartDaemon(createFakeAgentAdapter())
+
+    expect(notifications).toContainEqual({
+      title: 'a - clean the build',
+      body: 'Session failed: Daemon restarted while the Session was running',
+    })
   })
 })

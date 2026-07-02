@@ -46,6 +46,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     sessions: registry,
     deliver: options.notify ?? deliverWithOsascript,
   })
+  // Restart recovery: Sessions and Decisions are Projections, so startup
+  // rebuilds them from the Event Log. Sessions whose agent process died with
+  // the previous Daemon come back failed, not running; the Notifier is already
+  // subscribed, so those failures reach the Operator instead of passing silently.
+  decisionQueue.recover()
+  registry.recover()
   const app = createApp({ registry, eventLog, decisionQueue })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
