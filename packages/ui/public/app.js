@@ -2,7 +2,8 @@
 // HQ web UI, hash-routed over the Daemon's HTTP API.
 // '#/' renders the Session list; '#/sessions/<id>' renders the Session detail
 // screen, whose Transcript and pending Decision banner stream from the
-// Daemon's SSE endpoint.
+// Daemon's SSE endpoint; '#/inbox' renders the Decision Inbox, aggregating
+// pending Decisions across all Sessions.
 
 /**
  * Mirrors the Session contract in @ai-hq/core (contracts.ts).
@@ -24,6 +25,19 @@
  * @property {string} type
  * @property {any} payload
  * @property {string} ts
+ */
+
+/**
+ * Mirrors the Decision contract in @ai-hq/core (contracts.ts).
+ * @typedef {object} Decision
+ * @property {string} id
+ * @property {string} sessionId
+ * @property {string} toolName
+ * @property {unknown} input
+ * @property {'pending' | 'approved' | 'denied'} status
+ * @property {string | null} note
+ * @property {string} createdAt
+ * @property {string | null} decidedAt
  */
 
 const POLL_INTERVAL_MS = 1500
@@ -283,14 +297,17 @@ function appendEntry(transcript, event) {
 
 /**
  * One pending Decision card: the exact tool name, the full tool input, and the
- * Operator's two rulings. The card never removes itself - the decision_decided
- * Event on the stream clears it, so it also clears when the Verdict came from
- * somewhere else (curl, another tab).
+ * Operator's two rulings. The card never removes itself - the caller clears it
+ * when the Decision is ruled (the detail screen via the decision_decided Event
+ * on the stream, the Inbox via a re-poll), so it also clears when the Verdict
+ * came from somewhere else (curl, another tab). `onRuled` fires once a ruling
+ * exists on the Daemon, whether this card's or a concurrent one (409).
  * @param {string} decisionId
  * @param {string} toolName
  * @param {unknown} input
+ * @param {() => void} [onRuled]
  */
-function renderDecisionCard(decisionId, toolName, input) {
+function renderDecisionCard(decisionId, toolName, input, onRuled) {
   const card = document.createElement('article')
   card.className = 'decision-card'
 
@@ -334,10 +351,11 @@ function renderDecisionCard(decisionId, toolName, input) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(verdict),
       })
-      // 409 means someone already ruled; that ruling's Event clears the card.
+      // 409 means someone already ruled; that ruling clears the card too.
       if (!response.ok && response.status !== 409) {
         throw new Error(`daemon returned ${response.status}`)
       }
+      onRuled?.()
     } catch {
       approve.disabled = false
       deny.disabled = false
@@ -489,10 +507,131 @@ function renderDetailScreen(sessionId) {
   void loadSession()
 }
 
+// ---- Decision Inbox screen ----
+
+/**
+ * One Inbox entry: the Session the Decision belongs to (repo and prompt
+ * summary, linking to its detail screen) above the same Decision card the
+ * detail screen uses.
+ * @param {Decision} decision
+ * @param {Session | undefined} session
+ * @param {() => void} onRuled
+ */
+function renderInboxEntry(decision, session, onRuled) {
+  const entry = document.createElement('li')
+  entry.className = 'inbox-entry'
+
+  const label = document.createElement('a')
+  label.className = 'inbox-session'
+  label.href = `#/sessions/${encodeURIComponent(decision.sessionId)}`
+
+  const repo = document.createElement('code')
+  repo.className = 'repo-path'
+  repo.textContent = session?.repoPath ?? decision.sessionId
+  repo.title = repo.textContent
+
+  const prompt = document.createElement('span')
+  prompt.className = 'inbox-prompt'
+  prompt.textContent = session?.prompt ?? ''
+  prompt.title = prompt.textContent
+
+  label.append(repo, prompt)
+  entry.append(label, renderDecisionCard(decision.id, decision.toolName, decision.input, onRuled))
+  return entry
+}
+
+function renderInboxScreen() {
+  const heading = document.createElement('h2')
+  heading.textContent = 'Decision Inbox'
+
+  const list = document.createElement('ol')
+  list.className = 'inbox'
+
+  const empty = document.createElement('p')
+  empty.className = 'empty'
+  empty.textContent = 'no pending decisions - nothing is waiting on you'
+  empty.hidden = true
+
+  appRoot.replaceChildren(heading, list, empty)
+
+  let stopped = false
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer
+  // Each poll() call invalidates older ones' rescheduling, so an immediate
+  // refresh after a Verdict never leaves two polling chains running.
+  let pollGeneration = 0
+  teardown.push(() => {
+    stopped = true
+    clearTimeout(timer)
+  })
+
+  /** Inbox entries by Decision id: polls reconcile the list instead of
+   * re-rendering it, so a note the Operator is typing survives. */
+  /** @type {Map<string, HTMLElement>} */
+  const entries = new Map()
+
+  /**
+   * @param {Decision[]} decisions
+   * @param {Map<string, Session>} sessionsById
+   */
+  function reconcile(decisions, sessionsById) {
+    const pendingIds = new Set(decisions.map((decision) => decision.id))
+    for (const [id, entry] of entries) {
+      if (pendingIds.has(id)) continue
+      entry.remove()
+      entries.delete(id)
+    }
+    // Pending Decisions arrive oldest first and keep their relative order,
+    // so appending only the new ones preserves the Daemon's ordering.
+    for (const decision of decisions) {
+      if (entries.has(decision.id)) continue
+      const entry = renderInboxEntry(decision, sessionsById.get(decision.sessionId), refreshNow)
+      entries.set(decision.id, entry)
+      list.append(entry)
+    }
+    empty.hidden = entries.size > 0
+  }
+
+  function refreshNow() {
+    clearTimeout(timer)
+    void poll()
+  }
+
+  async function poll() {
+    const generation = ++pollGeneration
+    try {
+      const [decisionsResponse, sessionsResponse] = await Promise.all([
+        fetch('/decisions'),
+        fetch('/sessions'),
+      ])
+      if (!decisionsResponse.ok || !sessionsResponse.ok) {
+        throw new Error('daemon returned an error')
+      }
+      const { decisions } = /** @type {{ decisions: Decision[] }} */ (
+        await decisionsResponse.json()
+      )
+      const { sessions } = /** @type {{ sessions: Session[] }} */ (await sessionsResponse.json())
+      if (stopped) return
+      connectionBanner.hidden = true
+      reconcile(decisions, new Map(sessions.map((session) => [session.id, session])))
+    } catch {
+      if (!stopped) connectionBanner.hidden = false
+    } finally {
+      if (!stopped && generation === pollGeneration) timer = setTimeout(poll, POLL_INTERVAL_MS)
+    }
+  }
+
+  void poll()
+}
+
 // ---- Router ----
 
 function route() {
   for (const cleanup of teardown.splice(0)) cleanup()
+  if (location.hash === '#/inbox') {
+    renderInboxScreen()
+    return
+  }
   const match = /^#\/sessions\/([^/]+)$/.exec(location.hash)
   const sessionId = match?.[1]
   if (sessionId !== undefined) {

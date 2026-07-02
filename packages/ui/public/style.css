@@ -52,9 +52,25 @@ h2 {
   color: var(--text-dim);
 }
 
+.nav {
+  display: flex;
+  gap: 0.9rem;
+}
+
+.nav a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.nav a:hover {
+  color: var(--text);
+}
+
 .connection {
   color: var(--failed);
   font-size: 0.85rem;
+  margin-left: auto;
 }
 
 main {
@@ -311,6 +327,36 @@ col.updated {
 
 .decision-note::placeholder {
   color: var(--text-dim);
+}
+
+/* The Decision Inbox: pending Decisions across all Sessions. */
+.inbox {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.inbox-session {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.inbox-session:hover .inbox-prompt {
+  text-decoration: underline;
+}
+
+.inbox-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The Transcript: one entry per Event. */
