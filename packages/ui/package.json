@@ -8,5 +8,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@ai-hq/core": "workspace:*",
+    "@ai-hq/daemon": "workspace:*",
+    "@types/jsdom": "^28.0.3",
+    "jsdom": "^29.1.1"
   }
 }

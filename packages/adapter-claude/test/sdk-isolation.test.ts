@@ -9,10 +9,17 @@ import { describe, expect, test } from 'vitest'
 const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
 const packagesDir = fileURLToPath(new URL('../..', import.meta.url))
 
+// Walks a package's own sources: prunes node_modules and never follows
+// symlinks, which cyclic workspace links would otherwise turn into an
+// endless traversal.
 function listFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true, recursive: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => join(entry.parentPath, entry.name))
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.name !== 'node_modules')
+    .flatMap((entry) => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return listFiles(path)
+      return entry.isFile() ? [path] : []
+    })
 }
 
 describe('sdk isolation', () => {
@@ -23,9 +30,9 @@ describe('sdk isolation', () => {
     expect(packages).not.toHaveLength(0)
 
     const offenders = packages.flatMap((name) =>
-      listFiles(join(packagesDir, name))
-        .filter((file) => !file.includes('node_modules'))
-        .filter((file) => readFileSync(file, 'utf8').includes(SDK_PACKAGE)),
+      listFiles(join(packagesDir, name)).filter((file) =>
+        readFileSync(file, 'utf8').includes(SDK_PACKAGE),
+      ),
     )
 
     expect(offenders).toEqual([])

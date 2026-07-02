@@ -1,7 +1,8 @@
 // @ts-check
 // HQ web UI, hash-routed over the Daemon's HTTP API.
 // '#/' renders the Session list; '#/sessions/<id>' renders the Session detail
-// screen, whose Transcript streams from the Daemon's SSE endpoint.
+// screen, whose Transcript and pending Decision banner stream from the
+// Daemon's SSE endpoint.
 
 /**
  * Mirrors the Session contract in @ai-hq/core (contracts.ts).
@@ -237,6 +238,22 @@ function renderEntry(event) {
       }
       break
     }
+    case 'decision_requested': {
+      const name = document.createElement('code')
+      name.className = 'tool-name'
+      name.textContent = String(event.payload?.toolName ?? 'unknown tool')
+      body.append(kindLabel('gated'), name)
+      if (event.payload?.input !== undefined) {
+        body.append(codeBlock(JSON.stringify(event.payload.input, null, 2)))
+      }
+      break
+    }
+    case 'decision_decided': {
+      const status = String(event.payload?.status ?? 'decided')
+      const note = event.payload?.note
+      body.append(marker(note == null || note === '' ? status : `${status} - ${String(note)}`))
+      break
+    }
     case 'session_completed':
       body.append(marker('session completed'))
       break
@@ -262,6 +279,81 @@ function appendEntry(transcript, event) {
   if (nearBottom) window.scrollTo({ top: document.body.scrollHeight })
 }
 
+// ---- Decision banner ----
+
+/**
+ * One pending Decision card: the exact tool name, the full tool input, and the
+ * Operator's two rulings. The card never removes itself - the decision_decided
+ * Event on the stream clears it, so it also clears when the Verdict came from
+ * somewhere else (curl, another tab).
+ * @param {string} decisionId
+ * @param {string} toolName
+ * @param {unknown} input
+ */
+function renderDecisionCard(decisionId, toolName, input) {
+  const card = document.createElement('article')
+  card.className = 'decision-card'
+
+  const title = document.createElement('span')
+  title.className = 'decision-title'
+  title.textContent = 'pending decision'
+
+  const name = document.createElement('code')
+  name.className = 'tool-name'
+  name.textContent = toolName
+
+  const header = document.createElement('div')
+  header.className = 'decision-card-header'
+  header.append(title, name)
+
+  const approve = document.createElement('button')
+  approve.type = 'button'
+  approve.className = 'verdict-button decision-approve'
+  approve.textContent = 'Approve'
+
+  const note = document.createElement('input')
+  note.className = 'decision-note'
+  note.placeholder = 'note to the agent (optional)'
+
+  const deny = document.createElement('button')
+  deny.type = 'button'
+  deny.className = 'verdict-button decision-deny'
+  deny.textContent = 'Deny'
+
+  const actions = document.createElement('div')
+  actions.className = 'decision-actions'
+  actions.append(approve, note, deny)
+
+  /** @param {{ behavior: 'approve' } | { behavior: 'deny', note?: string }} verdict */
+  async function sendVerdict(verdict) {
+    approve.disabled = true
+    deny.disabled = true
+    try {
+      const response = await fetch(`/decisions/${encodeURIComponent(decisionId)}/verdict`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(verdict),
+      })
+      // 409 means someone already ruled; that ruling's Event clears the card.
+      if (!response.ok && response.status !== 409) {
+        throw new Error(`daemon returned ${response.status}`)
+      }
+    } catch {
+      approve.disabled = false
+      deny.disabled = false
+    }
+  }
+
+  approve.addEventListener('click', () => void sendVerdict({ behavior: 'approve' }))
+  deny.addEventListener('click', () => {
+    const text = note.value.trim()
+    void sendVerdict(text === '' ? { behavior: 'deny' } : { behavior: 'deny', note: text })
+  })
+
+  card.append(header, codeBlock(JSON.stringify(input ?? null, null, 2)), actions)
+  return card
+}
+
 // ---- Session detail screen ----
 
 /** @param {string} sessionId */
@@ -281,13 +373,17 @@ function renderDetailScreen(sessionId) {
   const prompt = document.createElement('p')
   prompt.className = 'session-prompt'
 
+  const decisions = document.createElement('section')
+  decisions.className = 'decisions'
+  decisions.hidden = true
+
   const transcriptHeading = document.createElement('h2')
   transcriptHeading.textContent = 'Transcript'
 
   const transcript = document.createElement('ol')
   transcript.className = 'transcript'
 
-  appRoot.replaceChildren(back, sessionHeader, prompt, transcriptHeading, transcript)
+  appRoot.replaceChildren(back, sessionHeader, prompt, decisions, transcriptHeading, transcript)
 
   let stopped = false
   /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -300,6 +396,39 @@ function renderDetailScreen(sessionId) {
   /** @param {Session['status']} status */
   function setStatus(status) {
     badgeSlot.replaceChildren(statusBadge(status))
+  }
+
+  /** Pending Decision cards in the banner, keyed by Decision id. */
+  /** @type {Map<string, HTMLElement>} */
+  const decisionCards = new Map()
+
+  /** @param {HqEvent} event */
+  function parkDecision(event) {
+    const decisionId = String(event.payload?.decisionId ?? '')
+    if (decisionId === '' || decisionCards.has(decisionId)) return
+    const card = renderDecisionCard(
+      decisionId,
+      String(event.payload?.toolName ?? 'unknown tool'),
+      event.payload?.input,
+    )
+    decisionCards.set(decisionId, card)
+    decisions.append(card)
+    decisions.hidden = false
+    setStatus('waiting_on_human')
+  }
+
+  /** @param {HqEvent} event */
+  function clearDecision(event) {
+    const decisionId = String(event.payload?.decisionId ?? '')
+    const card = decisionCards.get(decisionId)
+    if (card === undefined) return
+    decisionCards.delete(decisionId)
+    card.remove()
+    if (decisionCards.size === 0) {
+      decisions.hidden = true
+      // A terminal Event later in the stream overrides this for finished Sessions.
+      setStatus('running')
+    }
   }
 
   function openStream() {
@@ -316,6 +445,8 @@ function renderDetailScreen(sessionId) {
       connectionBanner.hidden = true
       const event = /** @type {HqEvent} */ (JSON.parse(message.data))
       appendEntry(transcript, event)
+      if (event.type === 'decision_requested') parkDecision(event)
+      if (event.type === 'decision_decided') clearDecision(event)
       if (event.type === 'session_completed') setStatus('completed')
       if (event.type === 'session_failed') setStatus('failed')
     }

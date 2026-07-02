@@ -226,6 +226,93 @@ col.updated {
   overflow-wrap: anywhere;
 }
 
+/* The pending Decision banner: rule on a Gated tool call with full context. */
+.decisions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+
+.decision-card {
+  border: 1px solid color-mix(in srgb, var(--waiting) 45%, transparent);
+  background: color-mix(in srgb, var(--waiting) 8%, transparent);
+  border-radius: 6px;
+  padding: 0.65rem 0.9rem;
+}
+
+.decision-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.decision-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--waiting);
+}
+
+.decision-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.verdict-button {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 0.3rem 0.9rem;
+  cursor: pointer;
+}
+
+.verdict-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.decision-approve {
+  color: var(--completed);
+  border-color: color-mix(in srgb, var(--completed) 45%, transparent);
+  background: color-mix(in srgb, var(--completed) 12%, transparent);
+}
+
+.decision-approve:not(:disabled):hover {
+  background: color-mix(in srgb, var(--completed) 22%, transparent);
+}
+
+.decision-deny {
+  color: var(--failed);
+  border-color: color-mix(in srgb, var(--failed) 45%, transparent);
+  background: color-mix(in srgb, var(--failed) 12%, transparent);
+}
+
+.decision-deny:not(:disabled):hover {
+  background: color-mix(in srgb, var(--failed) 22%, transparent);
+}
+
+.decision-note {
+  flex: 1;
+  min-width: 8rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+}
+
+.decision-note::placeholder {
+  color: var(--text-dim);
+}
+
 /* The Transcript: one entry per Event. */
 .transcript {
   list-style: none;
@@ -292,9 +379,19 @@ col.updated {
   overflow: auto;
 }
 
+/* Gated tool calls and their rulings in the Transcript. */
+.entry--decision_requested {
+  border-color: color-mix(in srgb, var(--waiting) 40%, transparent);
+}
+
+.entry--decision_requested .entry-kind {
+  color: var(--waiting);
+}
+
 /* Lifecycle Events read as markers, not content. */
 .entry--session_launched,
 .entry--agent_initialized,
+.entry--decision_decided,
 .entry--session_completed,
 .entry--session_failed {
   background: transparent;
