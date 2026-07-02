@@ -1,0 +1,20 @@
+{
+  "name": "@ai-hq/cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "hq": "./bin/hq.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-hq/core": "workspace:*",
+    "commander": "^14.0.0",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@ai-hq/daemon": "workspace:*"
+  }
+}
