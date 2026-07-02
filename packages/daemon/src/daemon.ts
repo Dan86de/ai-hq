@@ -1,7 +1,13 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
-import { createEventLog, createSessionRegistry, type AgentAdapter } from '@ai-hq/core'
+import {
+  createDecisionQueue,
+  createEventLog,
+  createPermissionGate,
+  createSessionRegistry,
+  type AgentAdapter,
+} from '@ai-hq/core'
 import { createClaudeAgentAdapter } from '@ai-hq/adapter-claude'
 import { createApp } from './app.ts'
 
@@ -23,12 +29,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
   mkdirSync(options.dataDir, { recursive: true })
   const dbPath = join(options.dataDir, 'hq.db')
   const eventLog = createEventLog({ dbPath })
+  const decisionQueue = createDecisionQueue({ dbPath, eventLog })
   const registry = createSessionRegistry({
     dbPath,
     eventLog,
     adapter: options.adapter ?? createClaudeAgentAdapter(),
+    gate: createPermissionGate({ decisionQueue }),
   })
-  const app = createApp({ registry, eventLog })
+  const app = createApp({ registry, eventLog, decisionQueue })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
     const server: ServerType = serve(
@@ -47,6 +55,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
         if ('closeAllConnections' in server) server.closeAllConnections()
       })
       registry.close()
+      decisionQueue.close()
       eventLog.close()
     },
   }

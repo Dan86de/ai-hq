@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import type { AgentAdapter, AgentRun } from './agent-adapter.ts'
 import type { Session, SessionStatus } from './contracts.ts'
 import type { EventLog } from './event-log.ts'
+import type { PermissionGate } from './permission-gate.ts'
 
 export interface LaunchInput {
   repoPath: string
@@ -42,8 +43,11 @@ export function createSessionRegistry(options: {
   dbPath: string
   eventLog: EventLog
   adapter: AgentAdapter
+  /** Gate for the agent's tool calls; without one, every call is allowed through. */
+  gate?: PermissionGate
 }): SessionRegistry {
   const { eventLog, adapter } = options
+  const gate: PermissionGate = options.gate ?? (async () => ({ behavior: 'approve' }))
   const db = new Database(options.dbPath)
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
@@ -112,8 +116,7 @@ export function createSessionRegistry(options: {
         const run = await adapter.launch({
           repoPath: input.repoPath,
           prompt: input.prompt,
-          // Gating arrives in a later slice; until then every tool call is allowed through.
-          requestPermission: async () => ({ behavior: 'approve' }),
+          requestPermission: (request) => gate(id, request),
         })
         void pump(id, run)
       } catch (error) {

@@ -5,13 +5,17 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
   createEventLog,
   createFakeAgentAdapter,
+  decideDecisionResponseSchema,
   getSessionResponseSchema,
   hqEventSchema,
   launchSessionResponseSchema,
+  listDecisionsResponseSchema,
   listSessionsResponseSchema,
   type AdapterEvent,
   type AgentAdapter,
+  type FakeAgentStep,
   type HqEvent,
+  type Verdict,
 } from '@ai-hq/core'
 import { startDaemon, type Daemon } from '../src/index.ts'
 
@@ -219,6 +223,137 @@ describe('daemon HTTP API', () => {
     } finally {
       eventLog.close()
     }
+  })
+})
+
+describe('gating over HTTP', () => {
+  const gatedScript: FakeAgentStep[] = [
+    { type: 'gated_tool_call', toolName: 'Bash', input: { command: 'rm -rf build' } },
+    { type: 'agent_message', text: 'Wrapping up.' },
+  ]
+
+  async function restartWithScript(script: FakeAgentStep[]): Promise<void> {
+    await daemon.close()
+    daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter({ script }) })
+  }
+
+  async function getPendingDecisions(path: string) {
+    const response = await fetch(url(path))
+    expect(response.status).toBe(200)
+    return listDecisionsResponseSchema.parse(await response.json()).decisions
+  }
+
+  async function sendVerdict(decisionId: string, verdict: Verdict): Promise<Response> {
+    return fetch(url(`/decisions/${decisionId}/verdict`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(verdict),
+    })
+  }
+
+  async function launchParkedSession() {
+    const session = await launchSession('/repo/a', 'clean the build')
+    await expect.poll(() => getPendingDecisions('/decisions')).toHaveLength(1)
+    const decision = (await getPendingDecisions('/decisions'))[0]!
+    return { session, decision }
+  }
+
+  test('a gated call parks as a pending Decision, visible per Session and across Sessions', async () => {
+    await restartWithScript(gatedScript)
+    const { session, decision } = await launchParkedSession()
+
+    expect(decision).toMatchObject({
+      sessionId: session.id,
+      toolName: 'Bash',
+      input: { command: 'rm -rf build' },
+      status: 'pending',
+    })
+    expect(await getPendingDecisions(`/sessions/${session.id}/decisions`)).toEqual([decision])
+
+    const fetched = getSessionResponseSchema.parse(
+      await (await fetch(url(`/sessions/${session.id}`))).json(),
+    ).session
+    expect(fetched.status).toBe('waiting_on_human')
+  })
+
+  test('approving via HTTP resumes the Session and the call executes', async () => {
+    await restartWithScript(gatedScript)
+    const { session, decision } = await launchParkedSession()
+
+    const response = await sendVerdict(decision.id, { behavior: 'approve' })
+
+    expect(response.status).toBe(200)
+    const decided = decideDecisionResponseSchema.parse(await response.json()).decision
+    expect(decided.status).toBe('approved')
+    expect(decided.decidedAt).not.toBeNull()
+
+    await expect
+      .poll(async () => (await listSessions()).find((s) => s.id === session.id)?.status)
+      .toBe('completed')
+    const events = await collectEvents(`/sessions/${session.id}/events`, 6)
+    expect(events.map((e) => e.type)).toEqual([
+      'session_launched',
+      'decision_requested',
+      'decision_decided',
+      'tool_call',
+      'agent_message',
+      'session_completed',
+    ])
+    expect(await getPendingDecisions('/decisions')).toHaveLength(0)
+  })
+
+  test('denying with a note via HTTP relays the note and the agent adjusts course', async () => {
+    await restartWithScript(gatedScript)
+    const { session, decision } = await launchParkedSession()
+
+    const response = await sendVerdict(decision.id, {
+      behavior: 'deny',
+      note: 'keep the build directory',
+    })
+
+    expect(response.status).toBe(200)
+    const decided = decideDecisionResponseSchema.parse(await response.json()).decision
+    expect(decided).toMatchObject({ status: 'denied', note: 'keep the build directory' })
+
+    await expect
+      .poll(async () => (await listSessions()).find((s) => s.id === session.id)?.status)
+      .toBe('completed')
+    const events = await collectEvents(`/sessions/${session.id}/events`, 6)
+    expect(events.map((e) => e.type)).not.toContain('tool_call')
+    expect(events[3]?.payload).toMatchObject({
+      text: expect.stringContaining('keep the build directory'),
+    })
+  })
+
+  test('a second Verdict is rejected with the already-decided Decision', async () => {
+    await restartWithScript(gatedScript)
+    const { decision } = await launchParkedSession()
+    await sendVerdict(decision.id, { behavior: 'approve' })
+
+    const response = await sendVerdict(decision.id, { behavior: 'deny', note: 'too late' })
+
+    expect(response.status).toBe(409)
+  })
+
+  test('a Verdict for an unknown Decision returns 404', async () => {
+    expect((await sendVerdict('unknown', { behavior: 'approve' })).status).toBe(404)
+  })
+
+  test('an invalid Verdict body is rejected', async () => {
+    await restartWithScript(gatedScript)
+    const { decision } = await launchParkedSession()
+
+    const response = await fetch(url(`/decisions/${decision.id}/verdict`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ behavior: 'maybe' }),
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  test('GET /sessions/:id/decisions returns 404 for an unknown session', async () => {
+    expect((await fetch(url('/sessions/unknown/decisions'))).status).toBe(404)
   })
 })
 

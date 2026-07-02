@@ -5,6 +5,8 @@ import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import {
   launchSessionRequestSchema,
+  verdictSchema,
+  type DecisionQueue,
   type EventLog,
   type HqEvent,
   type SessionRegistry,
@@ -17,8 +19,12 @@ const uiContentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 }
 
-export function createApp(options: { registry: SessionRegistry; eventLog: EventLog }): Hono {
-  const { registry, eventLog } = options
+export function createApp(options: {
+  registry: SessionRegistry
+  eventLog: EventLog
+  decisionQueue: DecisionQueue
+}): Hono {
+  const { registry, eventLog, decisionQueue } = options
   const app = new Hono()
   // The UI ships inside the Daemon: nothing separate to install, sign, or update.
   // Only files that exist in the ui package at startup are ever served.
@@ -58,6 +64,31 @@ export function createApp(options: { registry: SessionRegistry; eventLog: EventL
     const session = registry.get(c.req.param('id'))
     if (session === undefined) return c.notFound()
     return c.json({ session })
+  })
+
+  // Pending Decisions across all Sessions: the data behind the Decision Inbox.
+  app.get('/decisions', (c) => {
+    return c.json({ decisions: decisionQueue.pending() })
+  })
+
+  app.get('/sessions/:id/decisions', (c) => {
+    const sessionId = c.req.param('id')
+    if (registry.get(sessionId) === undefined) return c.notFound()
+    return c.json({ decisions: decisionQueue.pending(sessionId) })
+  })
+
+  app.post('/decisions/:id/verdict', async (c) => {
+    const body = await c.req.json().catch(() => null)
+    const parsed = verdictSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: 'invalid request', issues: parsed.error.issues }, 400)
+    }
+    const result = decisionQueue.decide(c.req.param('id'), parsed.data)
+    if (result.outcome === 'not_found') return c.notFound()
+    if (result.outcome === 'already_decided') {
+      return c.json({ error: 'decision already decided', decision: result.decision }, 409)
+    }
+    return c.json({ decision: result.decision })
   })
 
   // One mechanism serves both catch-up and streaming: replay the Event Log from
