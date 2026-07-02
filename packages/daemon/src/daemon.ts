@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
-import { createEventLog, createFakeAgentAdapter, createSessionRegistry } from '@ai-hq/core'
+import { createEventLog, createSessionRegistry, type AgentAdapter } from '@ai-hq/core'
+import { createClaudeAgentAdapter } from '@ai-hq/adapter-claude'
 import { createApp } from './app.ts'
 
 export interface Daemon {
@@ -14,6 +15,8 @@ export interface StartDaemonOptions {
   dataDir: string
   /** Port to listen on; 0 picks a free one. */
   port: number
+  /** AgentAdapter Sessions run on; defaults to the real Claude adapter. Tests inject the fake. */
+  adapter?: AgentAdapter
 }
 
 export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> {
@@ -23,8 +26,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
   const registry = createSessionRegistry({
     dbPath,
     eventLog,
-    // adapter-claude arrives in a later slice; the walking skeleton runs on the fake.
-    adapter: createFakeAgentAdapter(),
+    adapter: options.adapter ?? createClaudeAgentAdapter(),
   })
   const app = createApp({ registry })
 

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
   createEventLog,
+  createFakeAgentAdapter,
   launchSessionResponseSchema,
   listSessionsResponseSchema,
 } from '@ai-hq/core'
@@ -14,7 +15,7 @@ let daemon: Daemon
 
 beforeEach(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'hq-daemon-'))
-  daemon = await startDaemon({ dataDir, port: 0 })
+  daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter() })
 })
 
 afterEach(async () => {
@@ -72,7 +73,7 @@ describe('daemon HTTP API', () => {
       .toBe('completed')
     await daemon.close()
 
-    daemon = await startDaemon({ dataDir, port: 0 })
+    daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter() })
 
     const listed = (await listSessions()).find((s) => s.id === session.id)
     expect(listed?.status).toBe('completed')

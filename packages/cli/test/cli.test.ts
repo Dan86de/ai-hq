@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { createFakeAgentAdapter } from '@ai-hq/core'
 import { startDaemon, type Daemon } from '@ai-hq/daemon'
 
 const execFileAsync = promisify(execFile)
@@ -16,7 +17,7 @@ let daemon: Daemon
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'hq-cli-'))
-  daemon = await startDaemon({ dataDir, port: 0 })
+  daemon = await startDaemon({ dataDir, port: 0, adapter: createFakeAgentAdapter() })
 })
 
 afterAll(async () => {
