@@ -38,6 +38,11 @@ h1 {
   letter-spacing: 0.02em;
 }
 
+h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+
 h2 {
   margin: 0 0 1rem;
   font-size: 0.85rem;
@@ -171,4 +176,136 @@ col.updated {
   50% {
     opacity: 0.3;
   }
+}
+
+/* Session list rows navigate to the detail screen. */
+.session-row {
+  cursor: pointer;
+}
+
+.session-row:hover td {
+  background: var(--surface);
+}
+
+.session-link {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.session-link:hover {
+  text-decoration: underline;
+}
+
+/* Session detail screen. */
+.back-link {
+  display: inline-block;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.back-link:hover {
+  color: var(--text);
+}
+
+.session-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.session-header .repo-path {
+  font-size: 0.9rem;
+}
+
+.session-prompt {
+  margin: 0 0 1.5rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The Transcript: one entry per Event. */
+.transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.entry {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.entry-time {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  padding-top: 0.15rem;
+}
+
+.entry-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-kind {
+  display: inline-block;
+  margin-right: 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.entry-text {
+  margin: 0.15rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.entry-input {
+  margin: 0.4rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  max-height: 14rem;
+  overflow: auto;
+}
+
+/* Lifecycle Events read as markers, not content. */
+.entry--session_launched,
+.entry--agent_initialized,
+.entry--session_completed,
+.entry--session_failed {
+  background: transparent;
+  border-style: dashed;
+}
+
+.marker {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.entry--session_failed .marker {
+  color: var(--failed);
 }

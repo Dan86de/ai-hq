@@ -5,8 +5,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import {
   createEventLog,
   createFakeAgentAdapter,
+  getSessionResponseSchema,
+  hqEventSchema,
   launchSessionResponseSchema,
   listSessionsResponseSchema,
+  type AdapterEvent,
+  type AgentAdapter,
+  type HqEvent,
 } from '@ai-hq/core'
 import { startDaemon, type Daemon } from '../src/index.ts'
 
@@ -41,6 +46,91 @@ async function listSessions() {
   const response = await fetch(url('/sessions'))
   expect(response.status).toBe(200)
   return listSessionsResponseSchema.parse(await response.json()).sessions
+}
+
+/** An AgentAdapter whose run the test drives event by event. Supports one run at a time. */
+function createManualAdapter() {
+  const queue: (AdapterEvent | 'end')[] = []
+  let wake = (): void => {}
+  const adapter: AgentAdapter = {
+    async launch() {
+      return {
+        events: (async function* () {
+          while (true) {
+            while (queue.length > 0) {
+              const next = queue.shift()!
+              if (next === 'end') return
+              yield next
+            }
+            await new Promise<void>((resolve) => {
+              wake = resolve
+            })
+          }
+        })(),
+        async interrupt() {},
+        async resume() {},
+      }
+    },
+  }
+  return {
+    adapter,
+    emit(event: AdapterEvent) {
+      queue.push(event)
+      wake()
+    },
+    end() {
+      queue.push('end')
+      wake()
+    },
+  }
+}
+
+/** Connects to an SSE endpoint and hands back Events one at a time. */
+async function openEventStream(path: string, headers: Record<string, string> = {}) {
+  const controller = new AbortController()
+  const response = await fetch(url(path), { headers, signal: controller.signal })
+  expect(response.status).toBe(200)
+  expect(response.headers.get('content-type')).toContain('text/event-stream')
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  const parsed: HqEvent[] = []
+  return {
+    async next(): Promise<HqEvent> {
+      while (parsed.length === 0) {
+        const { done, value } = await reader.read()
+        if (done) throw new Error('event stream ended unexpectedly')
+        buffer += value
+        let frameEnd
+        while ((frameEnd = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, frameEnd)
+          buffer = buffer.slice(frameEnd + 2)
+          const data = frame
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice('data:'.length).trimStart())
+            .join('\n')
+          if (data !== '') parsed.push(hqEventSchema.parse(JSON.parse(data)))
+        }
+      }
+      return parsed.shift()!
+    },
+    close() {
+      controller.abort()
+    },
+  }
+}
+
+async function collectEvents(path: string, count: number, headers?: Record<string, string>) {
+  const stream = await openEventStream(path, headers)
+  try {
+    const events: HqEvent[] = []
+    for (let i = 0; i < count; i++) {
+      events.push(await stream.next())
+    }
+    return events
+  } finally {
+    stream.close()
+  }
 }
 
 describe('daemon HTTP API', () => {
@@ -91,6 +181,19 @@ describe('daemon HTTP API', () => {
     expect((await fetch(url('/ui/%2e%2e%2fpackage.json'))).status).toBe(404)
   })
 
+  test('GET /sessions/:id returns the session', async () => {
+    const session = await launchSession('/repo/a', 'fetch me')
+
+    const response = await fetch(url(`/sessions/${session.id}`))
+    expect(response.status).toBe(200)
+    const fetched = getSessionResponseSchema.parse(await response.json()).session
+    expect(fetched).toMatchObject({ id: session.id, repoPath: '/repo/a', prompt: 'fetch me' })
+  })
+
+  test('GET /sessions/:id returns 404 for an unknown session', async () => {
+    expect((await fetch(url('/sessions/unknown'))).status).toBe(404)
+  })
+
   test('events and sessions survive a daemon restart', async () => {
     const session = await launchSession('/repo/a', 'persist me')
     await expect
@@ -116,5 +219,86 @@ describe('daemon HTTP API', () => {
     } finally {
       eventLog.close()
     }
+  })
+})
+
+describe('GET /sessions/:id/events (SSE)', () => {
+  const completedTranscript = [
+    'session_launched',
+    'agent_message',
+    'tool_call',
+    'agent_message',
+    'session_completed',
+  ]
+
+  async function launchCompletedSession() {
+    const session = await launchSession('/repo/a', 'stream me')
+    await expect
+      .poll(async () => (await listSessions()).find((s) => s.id === session.id)?.status)
+      .toBe('completed')
+    return session
+  }
+
+  test('replays history and then continues live, with no gaps or duplicates', async () => {
+    await daemon.close()
+    const manual = createManualAdapter()
+    daemon = await startDaemon({ dataDir, port: 0, adapter: manual.adapter })
+
+    const session = await launchSession('/repo/a', 'stream me')
+    manual.emit({ type: 'agent_message', text: 'one' })
+
+    const stream = await openEventStream(`/sessions/${session.id}/events`)
+    try {
+      const replayed = [await stream.next(), await stream.next()]
+      expect(replayed[0]).toMatchObject({ type: 'session_launched', sessionId: session.id })
+      expect(replayed[1]).toMatchObject({ type: 'agent_message', payload: { text: 'one' } })
+
+      // Everything so far was delivered, so these two arrive over the live tail.
+      manual.emit({ type: 'agent_message', text: 'two' })
+      const live = await stream.next()
+      expect(live).toMatchObject({ type: 'agent_message', payload: { text: 'two' } })
+
+      manual.end()
+      const terminal = await stream.next()
+      expect(terminal.type).toBe('session_completed')
+
+      const seqs = [...replayed, live, terminal].map((e) => e.seq)
+      expect(seqs).toEqual([...new Set(seqs)].sort((a, b) => a - b))
+    } finally {
+      stream.close()
+    }
+  })
+
+  test('replays the full Transcript of a completed session', async () => {
+    const session = await launchCompletedSession()
+
+    const events = await collectEvents(`/sessions/${session.id}/events`, 5)
+    expect(events.map((e) => e.type)).toEqual(completedTranscript)
+    expect(events.every((e) => e.sessionId === session.id)).toBe(true)
+  })
+
+  test('fromSeq replays that event and everything after it', async () => {
+    const session = await launchCompletedSession()
+    const all = await collectEvents(`/sessions/${session.id}/events`, 5)
+
+    const fromThird = await collectEvents(
+      `/sessions/${session.id}/events?fromSeq=${all[2]!.seq}`,
+      3,
+    )
+    expect(fromThird).toEqual(all.slice(2))
+  })
+
+  test('Last-Event-ID resumes right after the given seq, as an EventSource reconnect does', async () => {
+    const session = await launchCompletedSession()
+    const all = await collectEvents(`/sessions/${session.id}/events`, 5)
+
+    const resumed = await collectEvents(`/sessions/${session.id}/events`, 3, {
+      'last-event-id': String(all[1]!.seq),
+    })
+    expect(resumed).toEqual(all.slice(2))
+  })
+
+  test('returns 404 for an unknown session', async () => {
+    expect((await fetch(url('/sessions/unknown/events'))).status).toBe(404)
   })
 })

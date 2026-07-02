@@ -15,6 +15,7 @@ export {
   type FakeAgentAdapterOptions,
 } from './fake-agent-adapter.ts'
 export {
+  getSessionResponseSchema,
   launchSessionRequestSchema,
   launchSessionResponseSchema,
   listSessionsResponseSchema,

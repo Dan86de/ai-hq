@@ -28,7 +28,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     eventLog,
     adapter: options.adapter ?? createClaudeAgentAdapter(),
   })
-  const app = createApp({ registry })
+  const app = createApp({ registry, eventLog })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>((resolve) => {
     const server: ServerType = serve(
@@ -43,6 +43,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     async close() {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()))
+        // SSE connections stay open indefinitely; close() alone would wait on them forever.
+        if ('closeAllConnections' in server) server.closeAllConnections()
       })
       registry.close()
       eventLog.close()

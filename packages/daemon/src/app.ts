@@ -2,7 +2,13 @@ import { readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { Hono, type Context } from 'hono'
-import { launchSessionRequestSchema, type SessionRegistry } from '@ai-hq/core'
+import { streamSSE } from 'hono/streaming'
+import {
+  launchSessionRequestSchema,
+  type EventLog,
+  type HqEvent,
+  type SessionRegistry,
+} from '@ai-hq/core'
 import { uiDir } from '@ai-hq/ui'
 
 const uiContentTypes: Record<string, string> = {
@@ -11,8 +17,8 @@ const uiContentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 }
 
-export function createApp(options: { registry: SessionRegistry }): Hono {
-  const { registry } = options
+export function createApp(options: { registry: SessionRegistry; eventLog: EventLog }): Hono {
+  const { registry, eventLog } = options
   const app = new Hono()
   // The UI ships inside the Daemon: nothing separate to install, sign, or update.
   // Only files that exist in the ui package at startup are ever served.
@@ -46,6 +52,70 @@ export function createApp(options: { registry: SessionRegistry }): Hono {
 
   app.get('/sessions', (c) => {
     return c.json({ sessions: registry.list() })
+  })
+
+  app.get('/sessions/:id', (c) => {
+    const session = registry.get(c.req.param('id'))
+    if (session === undefined) return c.notFound()
+    return c.json({ session })
+  })
+
+  // One mechanism serves both catch-up and streaming: replay the Event Log from
+  // a sequence number, then tail live. The stream stays open until the client
+  // disconnects, so a finished Session's Transcript and a running one read the same way.
+  app.get('/sessions/:id/events', (c) => {
+    const sessionId = c.req.param('id')
+    if (registry.get(sessionId) === undefined) return c.notFound()
+
+    // EventSource sends Last-Event-ID (the last seq it saw) on reconnect;
+    // it wins over fromSeq so reconnects never re-deliver or skip Events.
+    const lastEventId = Number(c.req.header('last-event-id'))
+    const fromSeq = Number.isInteger(lastEventId)
+      ? lastEventId + 1
+      : Math.max(0, Number(c.req.query('fromSeq')) || 0)
+
+    return streamSSE(c, async (stream) => {
+      // Subscribe before replaying so nothing appended mid-replay is missed;
+      // the seq guard in write() drops what the replay already delivered.
+      const pending: HqEvent[] = []
+      let wake = (): void => {}
+      let aborted = false
+      const unsubscribe = eventLog.subscribe((event) => {
+        if (event.sessionId !== sessionId) return
+        pending.push(event)
+        wake()
+      })
+      stream.onAbort(() => {
+        aborted = true
+        wake()
+      })
+
+      let lastSeq = fromSeq - 1
+      async function write(event: HqEvent): Promise<void> {
+        if (event.seq <= lastSeq) return
+        lastSeq = event.seq
+        await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) })
+      }
+
+      try {
+        for (const event of eventLog.read({ sessionId, fromSeq })) {
+          if (aborted) return
+          await write(event)
+        }
+        while (!aborted) {
+          const event = pending.shift()
+          if (event !== undefined) {
+            await write(event)
+            continue
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve
+          })
+        }
+      } finally {
+        unsubscribe()
+      }
+    })
   })
 
   return app
